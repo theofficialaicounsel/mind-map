@@ -434,11 +434,33 @@ async function processSSEStream(reader, tileId) {
           if (line.startsWith('data:')) {
             const dataStr = line.substring(5).trim();
             if (dataStr === '[DONE]') {
-              const safeHTML = safeRenderMarkdown(accumulatedAIResponse);
-              updateTileResponseContent(tileId, safeHTML, false);
+              // === FINAL CLEANUP FOR OPENROUTER ===
+              let cleanResponse = accumulatedAIResponse.trim();
+
+              // Remove common OpenRouter artifacts
+              cleanResponse = cleanResponse
+                // Remove tool_use / function call JSON blocks
+                .replace(/\{[\s\S]*?"type"\s*:\s*"tool_use"[\s\S]*?\}/g, '')
+                .replace(/\{[\s\S]*?"function"[\s\S]*?\}/g, '')
+                // Remove any full JSON objects that look like schema or empty choices
+                .replace(/```json\s*\{[\s\S]*?\}\s*```/g, '')
+                .replace(/\{[\s\S]*?"choices"\s*:\s*\[\s*\][\s\S]*?\}/g, '')
+                // Remove standalone JSON lines
+                .replace(/^\s*\{.*?\}\s*$/gm, '')
+                .replace(/^\s*\[.*?\]\s*$/gm, '')
+                // Clean up empty code blocks and extra newlines
+                .replace(/```[\s\S]*?```/g, match => match.trim() === '``````' ? '' : match)
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+
+              const finalHTML = cleanResponse 
+                ? safeRenderMarkdown(cleanResponse) 
+                : '<em style="color:#888">No content received (possibly tool calls only)</em>';
+
+              updateTileResponseContent(tileId, finalHTML, false);
 
               const tile = pairs.find(t => t.id === tileId);
-              if (tile) tile.response = accumulatedAIResponse;
+              if (tile) tile.response = cleanResponse || '';
               save();
 
               fullscreenOverlay.classList.remove('streaming');
@@ -447,21 +469,31 @@ async function processSSEStream(reader, tileId) {
 
             try {
               const data = JSON.parse(dataStr);
+
+              // Standard OpenAI-compatible delta
               const content = data.choices?.[0]?.delta?.content;
               if (content) {
                 accumulatedAIResponse += content;
                 updateTileResponseContent(tileId, content, true);
-              } else {
-                accumulatedAIResponse += dataStr;
-                updateTileResponseContent(tileId, dataStr, true);
+                continue;
               }
+
+              // Some providers send tool calls separately — ignore them visually
+              if (data.choices?.[0]?.delta?.tool_calls || data.choices?.[0]?.delta?.function_call) {
+                // Silently accumulate nothing visible
+                continue;
+              }
+
+              // Fallback: if no content, don't show raw JSON during streaming
             } catch (err) {
-              accumulatedAIResponse += dataStr;
-              updateTileResponseContent(tileId, dataStr, true);
+              // If not parseable JSON, treat as raw text (rare fallback)
+              // But avoid showing obvious JSON strings during live streaming
+              if (!dataStr.trim().startsWith('{') && !dataStr.trim().startsWith('[')) {
+                accumulatedAIResponse += dataStr + '\n';
+                updateTileResponseContent(tileId, dataStr + '\n', true);
+              }
+              // Otherwise: drop raw JSON chunks during streaming
             }
-          } else {
-            accumulatedAIResponse += line;
-            updateTileResponseContent(tileId, line, true);
           }
         }
       }
@@ -472,12 +504,28 @@ async function processSSEStream(reader, tileId) {
   } finally {
     fullscreenOverlay.classList.remove('streaming');
 
+    // Final fallback cleanup if stream ended without [DONE]
     if (accumulatedAIResponse) {
-      const safeHTML = safeRenderMarkdown(accumulatedAIResponse);
-      updateTileResponseContent(tileId, safeHTML, false);
+      let cleanResponse = accumulatedAIResponse.trim();
+
+      cleanResponse = cleanResponse
+        .replace(/\{[\s\S]*?"type"\s*:\s*"tool_use"[\s\S]*?\}/g, '')
+        .replace(/\{[\s\S]*?"function"[\s\S]*?\}/g, '')
+        .replace(/```json\s*\{[\s\S]*?\}\s*```/g, '')
+        .replace(/\{[\s\S]*?"choices"\s*:\s*\[\s*\][\s\S]*?\}/g, '')
+        .replace(/^\s*\{.*?\}\s*$/gm, '')
+        .replace(/^\s*\[.*?\]\s*$/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+      const finalHTML = cleanResponse 
+        ? safeRenderMarkdown(cleanResponse) 
+        : '<em style="color:#888">No content after cleanup</em>';
+
+      updateTileResponseContent(tileId, finalHTML, false);
 
       const tile = pairs.find(t => t.id === tileId);
-      if (tile) tile.response = accumulatedAIResponse;
+      if (tile) tile.response = cleanResponse || '';
       save();
     }
 
