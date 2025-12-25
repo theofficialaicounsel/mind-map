@@ -51,8 +51,19 @@ body {
     position: fixed; top: 0; left: 0; right: 0; height: 50px;
     padding: 0 10px; display: flex; align-items: center; justify-content: space-between;
     z-index: 50; background: linear-gradient(to bottom, var(--bg), transparent); pointer-events: none;
+    pointer-events: auto; /* Allow clicks on children */
 }
-#brandPlaceholder { pointer-events: none; font-weight: 900; color: var(--primary); text-transform: uppercase; letter-spacing: 1px; font-size: 12px; }
+#brandName { 
+    font-weight: 900; 
+    color: var(--primary); 
+    text-transform: uppercase; 
+    letter-spacing: 1px; 
+    font-size: 12px; 
+    cursor: pointer; 
+    border-bottom: 1px dashed transparent;
+    transition: border-bottom 0.2s;
+}
+#brandName:hover { border-bottom-color: var(--primary); }
 .top-fabs { pointer-events: auto; display: flex; gap: 6px; }
 .fab {
     width: 36px; height: 36px; border-radius: 50%; background: var(--card-bg);
@@ -182,7 +193,7 @@ body.view-full #grid .flip-card { height: 100vh; border-radius: 0; border: none;
 #cardMenu {
     position: fixed; background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
     padding: 6px; display: none; flex-direction: column; gap: 2px; z-index: 2000;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5); min-width: 200px; max-height: 70vh; overflow-y: auto;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5); min-width: 180px; max-height: 60vh; overflow-y: auto;
 }
 #cardMenu.active { display: flex; }
 .menu-item { 
