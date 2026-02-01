@@ -91,6 +91,7 @@
         <button class="menu-item" data-action="style"><i class="fas fa-paint-brush"></i> Manual Style</button>
         <div class="menu-separator"></div>
         <button class="menu-item" data-action="copy"><i class="fas fa-copy"></i> Copy</button>
+        <button class="menu-item" data-action="share-card"><i class="fas fa-share"></i> Share Card</button>
         <button class="menu-item" data-action="export-pdf"><i class="fas fa-file-pdf"></i> Export PDF</button>
         <button class="menu-item" data-action="fullscreen"><i class="fas fa-expand"></i> Fullscreen</button>
         <button class="menu-item" data-action="undo"><i class="fas fa-undo"></i> Undo</button>
@@ -117,6 +118,10 @@
                         <button class="btn btn-primary" onclick="app.exportToPDF()"><i class="fas fa-file-pdf"></i> Export PDF</button>
                         <button class="btn btn-ghost" onclick="document.getElementById('fileInput').click()"><i class="fas fa-upload"></i> Import</button>
                         <input type="file" id="fileInput" style="display:none;" accept=".json" onchange="app.importData(this)">
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom: 16px;">
+                        <button class="btn btn-ghost" onclick="app.shareSelectedCards()"><i class="fas fa-share"></i> Share Selected</button>
+                        <button class="btn btn-ghost" onclick="app.copyShareableLink()"><i class="fas fa-link"></i> Copy Link</button>
                     </div>
                     <button class="btn btn-danger" onclick="app.clearAll()"><i class="fas fa-trash-alt"></i> Clear All Cards</button>
                     <br><br>

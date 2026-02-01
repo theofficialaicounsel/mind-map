@@ -86,19 +86,42 @@ class App {
     }
 
     loadPresets() {
-        const saved = localStorage.getItem(PRESETS_KEY);
-        if (saved) {
-            try {
-                return JSON.parse(saved);
-            } catch (e) {
-                return { ...DEFAULT_PRESETS };
+        try {
+            const saved = localStorage.getItem(PRESETS_KEY);
+            if (saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    // Migrate old presets to new format
+                    const migrated = { ...DEFAULT_PRESETS };
+                    for (const [key, preset] of Object.entries(parsed)) {
+                        if (preset.key) {
+                            // Already new format
+                            migrated[key] = preset;
+                        } else if (preset.prompt) {
+                            // Old format - convert prompt to key
+                            migrated[key] = {
+                                name: preset.name || key,
+                                key: key
+                            };
+                        }
+                    }
+                    return migrated;
+                } catch (e) {
+                    return { ...DEFAULT_PRESETS };
+                }
             }
+        } catch (e) {
+            console.warn("localStorage not available:", e);
         }
         return { ...DEFAULT_PRESETS };
     }
 
     savePresets() {
-        localStorage.setItem(PRESETS_KEY, JSON.stringify(this.presets));
+        try {
+            localStorage.setItem(PRESETS_KEY, JSON.stringify(this.presets));
+        } catch (e) {
+            console.warn("Cannot save presets:", e);
+        }
     }
 
     getCurrentPreset() {
@@ -107,7 +130,11 @@ class App {
 
     getCurrentSystemPrompt() {
         // OpenRouter presets handle system prompts on the server side
-        // We only use the base system prompt for app behavior
+        // Only use the base system prompt when NOT using an OpenRouter preset
+        const preset = this.getCurrentPreset();
+        if (this.currentPresetKey !== 'default' && preset && preset.key) {
+            return ''; // Don't send local system prompt with OpenRouter presets
+        }
         return SYSTEM_PROMPT_BASE;
     }
 
@@ -145,6 +172,16 @@ class App {
         document.getElementById('stylePadding').addEventListener('input', (e) => document.getElementById('valPad').textContent = e.target.value + 'px');
         document.getElementById('styleRadius').addEventListener('input', (e) => document.getElementById('valRad').textContent = e.target.value + 'px');
         document.getElementById('styleWidth').addEventListener('input', (e) => document.getElementById('valWid').textContent = e.target.value + 'px');
+        
+        // Check for shared cards in URL hash
+        if (window.location.hash && window.location.hash.startsWith('#share=')) {
+            const loaded = this.loadFromShareHash(window.location.hash);
+            if (loaded) {
+                // Clear the hash without reloading
+                history.replaceState(null, '', window.location.pathname);
+                this.showToast("Shared cards loaded!");
+            }
+        }
     }
 
     updatePresetButtonLabel() {
@@ -451,27 +488,35 @@ class App {
     }
 
     saveState() {
-        const data = {
-            cards: this.cards,
-            theme: this.theme,
-            settings: this.settings,
-            sessionId: this.sessionId
-        };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        try {
+            const data = {
+                cards: this.cards,
+                theme: this.theme,
+                settings: this.settings,
+                sessionId: this.sessionId
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (e) {
+            console.warn("Cannot save state:", e);
+        }
     }
 
     loadState() {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-            try {
-                const data = JSON.parse(raw);
-                this.cards = data.cards || [];
-                this.theme = { ...this.theme, ...data.theme };
-                this.settings = { ...this.settings, ...data.settings };
-                this.sessionId = data.sessionId || this.sessionId;
-            } catch (e) {
-                console.error("Load failed", e);
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+                try {
+                    const data = JSON.parse(raw);
+                    this.cards = data.cards || [];
+                    this.theme = { ...this.theme, ...data.theme };
+                    this.settings = { ...this.settings, ...data.settings };
+                    this.sessionId = data.sessionId || this.sessionId;
+                } catch (e) {
+                    console.error("Load failed", e);
+                }
             }
+        } catch (e) {
+            console.warn("Cannot load state:", e);
         }
     }
 
@@ -501,110 +546,296 @@ class App {
     }
 
     exportData() {
-        const data = {
-            cards: this.cards,
-            theme: this.theme,
-            settings: this.settings,
-            sessionId: this.sessionId,
-            presets: this.presets
+        try {
+            const timestamp = new Date();
+            const dateStr = timestamp.toISOString().split('T')[0];
+            const timeStr = timestamp.toTimeString().split(' ')[0].replace(/:/g, '-');
+            const cardCount = this.cards.length;
+            
+            console.log("Exporting", cardCount, "cards");
+            
+            const data = {
+                version: '1.0',
+                exportDate: timestamp.toISOString(),
+                name: `ai-Ncards Export - ${dateStr}`,
+                cards: this.cards,
+                theme: this.theme,
+                settings: this.settings,
+                presets: this.presets
+            };
+            
+            const jsonStr = JSON.stringify(data, null, 2);
+            console.log("Export data size:", jsonStr.length, "bytes");
+            
+            const blob = new Blob([jsonStr], { type: 'application/json' });
+            console.log("Blob created, size:", blob.size, "bytes");
+            
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `aincards_${dateStr}_${timeStr}_${cardCount}cards.json`;
+            
+            console.log("Starting download...");
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            setTimeout(() => {
+                URL.revokeObjectURL(url);
+                console.log("Download triggered, blob URL revoked");
+            }, 1000);
+            
+            this.showToast(`Exported ${cardCount} cards`);
+        } catch (err) {
+            console.error("Export failed:", err);
+            this.showToast("Export failed: " + err.message);
+        }
+    }
+
+    shareSelectedCards() {
+        try {
+            if (this.selectedIds.size === 0) {
+                this.showToast("Select cards to share");
+                return;
+            }
+            
+            const cardsToShare = this.cards.filter(c => this.selectedIds.has(c.id));
+            const timestamp = new Date();
+            const dateStr = timestamp.toISOString().split('T')[0];
+            
+            const shareData = {
+                version: '1.0',
+                sharedDate: timestamp.toISOString(),
+                name: `Shared Cards - ${dateStr}`,
+                cards: cardsToShare
+            };
+            
+            const jsonStr = JSON.stringify(shareData, null, 2);
+            const blob = new Blob([jsonStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `aincards_shared_${dateStr}_${cardsToShare.length}cards.json`;
+            
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            
+            this.showToast(`Shared ${cardsToShare.length} cards`);
+        } catch (err) {
+            console.error("Share failed:", err);
+            this.showToast("Share failed: " + err.message);
+        }
+    }
+
+    copyShareableLink() {
+        if (this.selectedIds.size === 0) {
+            this.showToast("Select cards to share");
+            return;
+        }
+        
+        const cardsToShare = this.cards.filter(c => this.selectedIds.has(c.id));
+        
+        // Create a compact shareable format
+        const shareData = {
+            v: 1,
+            c: cardsToShare.map(c => ({
+                q: c.q,
+                r: c.r,
+                p: c.preset || null
+            }))
         };
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `ai_ncards_export_${Date.now()}.json`;
-        a.click();
-        this.showToast("Export downloaded");
+        
+        try {
+            const jsonStr = JSON.stringify(shareData);
+            const compressed = btoa(encodeURIComponent(jsonStr));
+            
+            // Create a shareable URL (using hash to avoid server storage)
+            const shareUrl = `${window.location.origin}${window.location.pathname}#share=${compressed}`;
+            
+            navigator.clipboard.writeText(shareUrl).then(() => {
+                this.showToast("Share link copied to clipboard");
+            }).catch(() => {
+                // Fallback: copy the JSON data
+                navigator.clipboard.writeText(jsonStr).then(() => {
+                    this.showToast("Shared cards JSON copied");
+                }).catch(() => {
+                    this.showToast("Failed to copy");
+                });
+            });
+        } catch (err) {
+            this.showToast("Failed to create share link");
+            console.error(err);
+        }
+    }
+
+    loadFromShareHash(hash) {
+        try {
+            // Decode the share data from URL hash
+            const compressed = hash.replace('#share=', '');
+            const jsonStr = decodeURIComponent(atob(compressed));
+            const shareData = JSON.parse(jsonStr);
+            
+            if (shareData.v !== 1 || !shareData.c) {
+                throw new Error("Invalid share format");
+            }
+            
+            // Import the shared cards
+            const importedCards = shareData.c.map((c, index) => ({
+                id: crypto.randomUUID(),
+                q: c.q,
+                r: c.r,
+                preset: c.p || null,
+                styles: {},
+                isPresetCard: false
+            }));
+            
+            this.pushHistory("Import Shared Cards");
+            this.cards = [...importedCards, ...this.cards];
+            this.saveState();
+            this.renderAll();
+            this.showToast(`Added ${importedCards.length} shared cards`);
+            return true;
+        } catch (err) {
+            console.error("Failed to load shared cards:", err);
+            return false;
+        }
     }
 
     exportToPDF() {
-        const cardsToExport = this.selectedIds.size > 0 
-            ? this.cards.filter(c => this.selectedIds.has(c.id))
-            : this.cards;
+        try {
+            const cardsToExport = this.selectedIds.size > 0 
+                ? this.cards.filter(c => this.selectedIds.has(c.id))
+                : this.cards;
 
-        if (cardsToExport.length === 0) {
-            this.showToast("No cards to export");
-            return;
-        }
+            if (cardsToExport.length === 0) {
+                this.showToast("No cards to export");
+                return;
+            }
 
-        let content = `
-            <div style="font-family: Arial, sans-serif; padding: 20px; background: ${this.theme.bg}; color: ${this.theme.text};">
-                <h1 style="color: ${this.theme.primary}; margin-bottom: 20px;">ai-Ncards Export</h1>
-                <p style="color: #888; margin-bottom: 30px;">Exported on ${new Date().toLocaleString()}</p>
-        `;
+            let content = `
+                <div style="font-family: Arial, sans-serif; padding: 20px; background: ${this.theme.bg}; color: ${this.theme.text};">
+                    <h1 style="color: ${this.theme.primary}; margin-bottom: 20px;">ai-Ncards Export</h1>
+                    <p style="color: #888; margin-bottom: 30px;">Exported on ${new Date().toLocaleString()}</p>
+            `;
 
-        cardsToExport.forEach((card, index) => {
-            const preset = card.preset ? this.presets[card.preset] : null;
-            content += `
-                <div style="background: ${this.theme.cardBg}; border: 1px solid ${this.theme.border}; border-radius: 12px; padding: 20px; margin-bottom: 20px; page-break-inside: avoid;">
-                    <div style="border-bottom: 1px solid ${this.theme.border}; padding-bottom: 10px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
-                        <strong style="color: ${this.theme.primary};">Card ${index + 1}</strong>
-                        <div style="display: flex; gap: 6px;">
-                            ${preset ? `<span style="background: ${this.theme.primary}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">${this.escapeHtml(preset.name)}</span>` : ''}
-                            ${card.styles && card.styles.locked ? '<span style="background: #c41e3a; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">LOCKED</span>' : ''}
+            cardsToExport.forEach((card, index) => {
+                const preset = card.preset ? this.presets[card.preset] : null;
+                content += `
+                    <div style="background: ${this.theme.cardBg}; border: 1px solid ${this.theme.border}; border-radius: 12px; padding: 20px; margin-bottom: 20px; page-break-inside: avoid;">
+                        <div style="border-bottom: 1px solid ${this.theme.border}; padding-bottom: 10px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                            <strong style="color: ${this.theme.primary};">Card ${index + 1}</strong>
+                            <div style="display: flex; gap: 6px;">
+                                ${preset ? `<span style="background: ${this.theme.primary}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">${this.escapeHtml(preset.name)}</span>` : ''}
+                                ${card.styles && card.styles.locked ? '<span style="background: #c41e3a; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">LOCKED</span>' : ''}
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong style="display: block; margin-bottom: 5px; font-size: 12px; color: #888;">REQUEST:</strong>
+                            <div style="white-space: pre-wrap;">${this.escapeHtml(card.q)}</div>
+                        </div>
+                        <div>
+                            <strong style="display: block; margin-bottom: 5px; font-size: 12px; color: #888;">RESPONSE:</strong>
+                            <div style="white-space: pre-wrap;">${this.escapeHtml(card.r)}</div>
                         </div>
                     </div>
-                    <div style="margin-bottom: 15px;">
-                        <strong style="display: block; margin-bottom: 5px; font-size: 12px; color: #888;">REQUEST:</strong>
-                        <div style="white-space: pre-wrap;">${this.escapeHtml(card.q)}</div>
-                    </div>
-                    <div>
-                        <strong style="display: block; margin-bottom: 5px; font-size: 12px; color: #888;">RESPONSE:</strong>
-                        <div style="white-space: pre-wrap;">${this.escapeHtml(card.r)}</div>
-                    </div>
-                </div>
-            `;
-        });
+                `;
+            });
 
-        content += '</div>';
+            content += '</div>';
 
-        const opt = {
-            margin: 10,
-            filename: `ai-ncards-export-${Date.now()}.pdf`,
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true },
-            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-        };
+            // Check if html2pdf is available
+            if (typeof html2pdf !== 'function') {
+                throw new Error("PDF library not loaded");
+            }
 
-        this.showToast("Generating PDF...");
-        
-        html2pdf().set(opt).from(content).save().then(() => {
-            this.showToast("PDF downloaded");
-        }).catch(err => {
-            this.showToast("PDF export failed");
-            console.error(err);
-        });
+            const opt = {
+                margin: 10,
+                filename: `aincards_export_${new Date().toISOString().split('T')[0]}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            };
+
+            this.showToast("Generating PDF...");
+            
+            html2pdf().set(opt).from(content).save().then(() => {
+                this.showToast("PDF downloaded");
+            }).catch(err => {
+                console.error("PDF generation failed:", err);
+                this.showToast("PDF failed: " + err.message);
+            });
+        } catch (err) {
+            console.error("PDF export error:", err);
+            this.showToast("PDF export failed: " + err.message);
+        }
     }
 
     importData(input) {
         const file = input.files[0];
         if (!file) return;
+        
+        // Check file size (max 10MB)
+        if (file.size > 10 * 1024 * 1024) {
+            this.showToast("File too large (max 10MB)");
+            input.value = '';
+            return;
+        }
+        
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
-                const data = JSON.parse(e.target.result);
+                const rawData = JSON.parse(e.target.result);
+                
+                // Validate import data structure
+                if (!rawData.cards || !Array.isArray(rawData.cards)) {
+                    throw new Error("Invalid file format: missing cards array");
+                }
+                
+                // Create backup before importing
                 this.pushHistory("Pre-Import Backup");
-                this.cards = data.cards || [];
-                if (data.presets) {
-                    this.presets = { ...this.presets, ...data.presets };
+                
+                // Import cards
+                this.cards = rawData.cards;
+                
+                // Import presets if present
+                if (rawData.presets) {
+                    // Merge imported presets with existing ones
+                    this.presets = { ...this.presets, ...rawData.presets };
                     this.savePresets();
                 }
-                this.theme = data.theme || this.theme;
-                this.settings = data.settings || this.settings;
-                this.sessionId = data.sessionId || this.sessionId;
+                
+                // Import theme if present and valid
+                if (rawData.theme) {
+                    this.theme = { ...this.theme, ...rawData.theme };
+                }
+                
+                // Import settings if present
+                if (rawData.settings) {
+                    this.settings = { ...this.settings, ...rawData.settings };
+                }
                 
                 this.renderAll();
                 this.applyTheme();
                 this.applyView();
                 this.saveState();
-                this.showToast("Import Successful");
+                
+                const cardCount = rawData.cards.length;
+                this.showToast(`Imported ${cardCount} cards successfully`);
                 this.closeModal('settingsModal');
             } catch (err) {
-                alert("Invalid JSON file");
+                console.error("Import error:", err);
+                this.showToast("Import failed: " + err.message);
             }
+            input.value = '';
+        };
+        reader.onerror = () => {
+            this.showToast("Failed to read file");
+            input.value = '';
         };
         reader.readAsText(file);
-        input.value = '';
     }
 
     clearAll() {
@@ -620,8 +851,12 @@ class App {
 
     resetApp() {
         if (confirm("WARNING: This will delete ALL data, settings, and history. The app will restart to the welcome screen. Are you sure?")) {
-            localStorage.removeItem(STORAGE_KEY);
-            localStorage.removeItem(PRESETS_KEY);
+            try {
+                localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem(PRESETS_KEY);
+            } catch (e) {
+                console.warn("Cannot clear storage:", e);
+            }
             window.location.reload();
         }
     }
@@ -861,8 +1096,19 @@ class App {
         // Get preset for this request
         const preset = this.getCurrentPreset();
         const usePreset = this.currentPresetKey !== 'default' && preset && preset.key;
+        
+        console.log("sendRequest - currentPresetKey:", this.currentPresetKey);
+        console.log("sendRequest - preset:", preset);
+        console.log("sendRequest - usePreset:", usePreset);
 
-        let fullPrompt = this.getCurrentSystemPrompt() + "\n\nUser: " + prompt;
+        // Build prompt - only include system prompt if not using OpenRouter preset
+        let fullPrompt;
+        const sysPrompt = this.getCurrentSystemPrompt();
+        if (sysPrompt) {
+            fullPrompt = sysPrompt + "\n\nUser: " + prompt;
+        } else {
+            fullPrompt = prompt;
+        }
         
         if (contextCardId) {
             const oldCard = this.cards.find(c => c.id === contextCardId);
@@ -887,7 +1133,10 @@ class App {
             // Add model if using a preset
             if (usePreset) {
                 requestBody.model = `@preset/${preset.key}`;
+                console.log("Using preset model:", requestBody.model);
             }
+            
+            console.log("Request body:", JSON.stringify(requestBody).substring(0, 200));
 
             const res = await fetch(url, {
                 method: 'POST',
@@ -1185,6 +1434,11 @@ class App {
                 navigator.clipboard.writeText(card.r || card.q || '');
                 this.showToast('Copied to clipboard');
                 break;
+            case 'share-card':
+                this.selectedIds.clear();
+                this.selectedIds.add(id);
+                this.shareSelectedCards();
+                break;
             case 'export-pdf':
                 this.selectedIds.clear();
                 this.selectedIds.add(id);
@@ -1409,8 +1663,14 @@ class App {
             // Build request body - keep original format for proxy compatibility
             let requestBody = {
                 sessionId: this.sessionId,
-                prompt: this.getCurrentSystemPrompt() + "\n\nUser: " + prompt
+                prompt: prompt
             };
+            
+            // Add system prompt only if not using an OpenRouter preset
+            const sysPrompt = this.getCurrentSystemPrompt();
+            if (sysPrompt) {
+                requestBody.prompt = sysPrompt + "\n\nUser: " + requestBody.prompt;
+            }
             
             // Add model if using a preset
             if (usePreset) {
